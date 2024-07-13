@@ -71,13 +71,11 @@ typedef struct {
 void run(const char *kernel_name, const char *hsaco_file) {
     streamk_arg_t karg;
 
-    auto A_npy = load_from_npy("/home/nmeganat/triton/streamk_integration/A_f32.npy");
-    auto B_npy = load_from_npy("/home/nmeganat/triton/streamk_integration/B_f32.npy");
-    auto C_npy = load_from_npy("/home/nmeganat/triton/streamk_integration/C_f32.npy");
+    auto A_npy = load_from_npy("/home/nmeganat/triton_kernel_integration/A_mxk_f32.npy");
+    auto B_npy = load_from_npy("/home/nmeganat/triton_kernel_integration/B_kxn_f32.npy");
 
     float *A_f32 = A_npy.data();
     float *B_f32 = B_npy.data();
-    float *C_f32 = C_npy.data();
 
     karg.M = 4864;
     karg.N = 4096;
@@ -105,8 +103,8 @@ void run(const char *kernel_name, const char *hsaco_file) {
     tensor_copy<float16, float>(static_cast<float16*>(A_half_host), A_f32, static_cast<size_t>(karg.M) * karg.K);
     tensor_copy<float16, float>(static_cast<float16*>(B_half_host), B_f32, static_cast<size_t>(karg.N) * karg.K);
 
-    CHECK_HIP_ERROR(hipMemcpy(A_half_d, A_half_host, static_cast<size_t>(karg.M) * karg.K, hipMemcpyHostToDevice));
-    CHECK_HIP_ERROR(hipMemcpy(B_half_d, B_half_host, static_cast<size_t>(karg.N) * karg.K, hipMemcpyHostToDevice));
+    CHECK_HIP_ERROR(hipMemcpy(A_half_d, A_half_host, static_cast<size_t>(karg.M) * karg.K * data_byte, hipMemcpyHostToDevice));
+    CHECK_HIP_ERROR(hipMemcpy(B_half_d, B_half_host, static_cast<size_t>(karg.N) * karg.K * data_byte, hipMemcpyHostToDevice));
 
     CHECK_HIP_ERROR(hipMemset(C_half_d,
                 0, static_cast<size_t>(karg.M) * karg.N * data_byte));
@@ -130,7 +128,7 @@ void run(const char *kernel_name, const char *hsaco_file) {
 
     int warp_size = 64, num_warps = 4, shared_memory = 49152;
     std::vector<size_t> grid_size{304, 1, 1};
-    std::vector<size_t> block_size{warp_size * num_warps, 1, 1};
+    std::vector<size_t> block_size{static_cast<size_t>(warp_size) * num_warps, 1, 1};
     void *params[] = {&karg.A, &karg.B, &karg.C,
                         &karg.M,
                         &karg.N,
@@ -146,17 +144,39 @@ void run(const char *kernel_name, const char *hsaco_file) {
 
     CHECK_HIP_ERROR(hipModuleLaunchKernel(kernelFunc, grid_size[0], grid_size[1], grid_size[2], block_size[0], block_size[1], block_size[2], shared_memory, 0, params, 0));
 
+    // size_t arg_size = sizeof(karg);
+    // void *config[] = {HIP_LAUNCH_PARAM_BUFFER_POINTER, (void *)&karg,
+    //             HIP_LAUNCH_PARAM_BUFFER_SIZE, &arg_size,
+    //             HIP_LAUNCH_PARAM_END};
+    // hipEvent_t start;
+    // hipEvent_t stop;
+    // CHECK_HIP_ERROR(hipEventCreate(&start));
+    // CHECK_HIP_ERROR(hipEventCreate(&stop));
+    // float ms = .0;
+
+    // CHECK_HIP_ERROR(hipExtModuleLaunchKernel(
+    //     kernelFunc, grid_size[0], grid_size[1], grid_size[2], block_size[0],
+    //     block_size[1], block_size[2], 0, 0, NULL, (void **)&config, start, stop));
+
+    // CHECK_HIP_ERROR(hipEventSynchronize(stop));
+    // CHECK_HIP_ERROR(hipEventElapsedTime(&ms, start, stop));
+    // CHECK_HIP_ERROR(hipEventDestroy(start));
+    // CHECK_HIP_ERROR(hipEventDestroy(stop));
+
+    CHECK_HIP_ERROR(hipMemcpy(C_half_host, karg.C, static_cast<size_t>(karg.N) * karg.M * data_byte, hipMemcpyDeviceToHost));
+
     std::vector<float> op;
     op.reserve(karg.M * karg.N);
     const std::vector<unsigned long> op_shape{static_cast<unsigned long>(karg.M), static_cast<unsigned long>(karg.N)};
 
     for(int i=0; i < karg.M * karg.N ; i++) {
         // std::cout<<*(((float16*)karg.C)+i) <<", ";
-        op[i] = (float)*(((float16*)karg.C)+i);
+        op[i] = (float)*(((float16*)C_half_host)+i);
+        // op[i] = (float)*(((float16*)karg.C)+i);
     }
 
     const npy::npy_data_ptr<float> op_npy{op.data(), op_shape, false};
-    write_npy("/home/nmeganat/triton/streamk_integration/out_driver.npy", op_npy);
+    write_npy("/home/nmeganat/triton_kernel_integration/out_driver.npy", op_npy);
 
     free(A_half_host);
     free(B_half_host);
@@ -168,7 +188,7 @@ void run(const char *kernel_name, const char *hsaco_file) {
 }
 int main() {
 
-  const char *hsaco_file = "/home/nmeganat/triton/streamk_integration/streamk_gemm.hsaco";
+  const char *hsaco_file = "/home/nmeganat/triton_kernel_integration/streamk_gemm.hsaco";
   const char *kernel_name = "streamk_gemm";
   
   run(kernel_name, hsaco_file);
